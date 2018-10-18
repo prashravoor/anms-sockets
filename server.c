@@ -1,65 +1,110 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include "common.h"
+#include <signal.h>
+#include <sys/wait.h>
 
-#define DEFAULT_SERVER_PORT 8080
 #define DEFAULT_QUEUE_SIZE 5
-#define SOCKET_DOMAIN AF_INET
-#define SOCKET_TYPE SOCK_STREAM
+#define DEFAULT_FORK_POOL_SIZE 100
+#define ENV_NO_FORK_CHILDREN "NO_FORK_CHILDREN"
 #define MAX 1000
 
 extern int errno;
 
-void serveFile(int server_socket, int client_socket);
+int startServer(int port, int maxQueueSize);
+void serveFile(int client_socket);
 int openFileForRead(char *name);
+void stopServer(int signum);
 
-void error(char *msg, int socket)
-{
-    perror(msg);
-    if (socket > 0)
-    {
-        close(socket);
-    }
-    exit(1);
-}
+static int server_socket;
 
 int main(int argc, char **argv)
 {
-    int server_socket, client_socket, port = DEFAULT_SERVER_PORT, maxQueueSize = DEFAULT_QUEUE_SIZE;
-    struct sockaddr_in server_address, client_address;
-    char *ipAddress = NULL;
+    int port = DEFAULT_SERVER_PORT, maxQueueSize = DEFAULT_QUEUE_SIZE, server_socket;
+    int client_socket, fork_children = 1, child_pid;
+    struct sockaddr_in client_address;
     socklen_t client_len = 0;
+    struct sigaction handler;
 
-    // Usage: rcatserver <Optional IP> <Optional Port> <Optional Max Queue Size>
-    if (argc != 1 && argc != 4)
+    // Usage: rcatserver <Optional Port> <Optional Max Queue Size>
+    if (argc != 1 && argc != 3)
     {
-        printf("Invalid command syntax\n\nUsage: %s <Optional IP> <Optional Port> <Optional Max Queue Size>\n", argv[0]);
+        printf("Invalid command syntax\n\nUsage: %s <Optional Port> <Optional Max Queue Size>\n", argv[0]);
         return 1;
     }
 
-    if (4 == argc)
+    if (3 == argc)
     {
-        ipAddress = argv[1];
-        port = atoi(argv[2]);
+        port = atoi(argv[1]);
         if (port < 1024)
         {
             printf("Port number is not valid, specify a port value >= 1024\n");
             return 1;
         }
 
-        maxQueueSize = atoi(argv[3]);
+        maxQueueSize = atoi(argv[1]);
         if (maxQueueSize < 0 || maxQueueSize > 5)
         {
             printf("Invalid value for max queue size, enter a value between 0 and 5\n");
             return 1;
         }
     }
+
+    if (getenv(ENV_NO_FORK_CHILDREN))
+    {
+        fork_children = 0;
+    }
+
+    memset(&handler, 0, sizeof(handler));
+    handler.sa_handler = stopServer;
+    sigaction(SIGTERM, &handler, NULL);
+    sigaction(SIGINT, &handler, NULL);
+    signal(SIGCHLD, SIG_IGN);
+
+    server_socket = startServer(port, maxQueueSize);
+    if (server_socket < 0)
+    {
+        error("Failed to start the server", -1);
+    }
+
+    while (1)
+    {
+        printf("Server is now listening for connections\n");
+        memset(&client_address, 0, sizeof(client_address));
+        client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_len);
+        printf("Connection received: %d\n", client_socket);
+        if (client_socket < 0)
+        {
+            perror("Failed to accept the connection");
+            continue;
+        }
+        if (fork_children && (child_pid = fork()) == 0)
+        {
+            serveFile(client_socket);
+            close(client_socket);
+            close(server_socket);
+            return 0;
+        }
+        else if (!fork_children || child_pid < 0)
+        {
+            serveFile(client_socket);
+        }
+        close(client_socket);
+    }
+
+    close(server_socket);
+    return 0;
+}
+
+int startServer(int port, int maxQueueSize)
+{
+    struct sockaddr_in server_address;
 
     server_socket = socket(SOCKET_DOMAIN, SOCKET_TYPE, 0);
     if (server_socket < 0)
@@ -69,7 +114,6 @@ int main(int argc, char **argv)
     printf("Succesfully created socket: %d\n", server_socket);
 
     memset(&server_address, 0, sizeof(server_address));
-    memset(&client_address, 0, sizeof(client_address));
     server_address.sin_family = SOCKET_DOMAIN;
     server_address.sin_addr.s_addr = INADDR_ANY;
     server_address.sin_port = htons(port);
@@ -84,27 +128,19 @@ int main(int argc, char **argv)
     {
         error("Listening for connections interrupted", server_socket);
     }
-
-    while (1)
-    {
-        printf("Server is now listening for connections\n");
-        client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_len);
-        printf("Connection received: %d\n", client_socket);
-        if (client_socket < 0)
-        {
-            perror("Failed to accept the connection");
-            continue;
-        }
-        serveFile(server_socket, client_socket);
-        close(client_socket);
-    }
-
-    close(server_socket);
-    return 0;
+    return server_socket;
 }
 
-void serveFile(int server_socket, int client_socket)
+void stopServer(int signum)
 {
+    printf("Handled Signal %d\n", signum);
+    close(server_socket);
+    exit(0);
+}
+
+void serveFile(int client_socket)
+{
+    //sleep(10);
     char buffer[MAX], *error = NULL;
     int numBytesRead = 0, fd = 0;
     printf("Attempting to read file name from socket %d\n", client_socket);
@@ -132,8 +168,9 @@ void serveFile(int server_socket, int client_socket)
     }
 
     printf("Writing file to client\n");
-    while((numBytesRead = read(fd, buffer, sizeof(buffer))) > 0) {
-        if (send(client_socket, buffer, numBytesRead, 0) < 0)
+    while ((numBytesRead = read(fd, buffer, sizeof(buffer))) > 0)
+    {
+        if (send(client_socket, buffer, numBytesRead, MSG_NOSIGNAL) < 0)
         {
             perror("Failed to send the data to the client");
             break;

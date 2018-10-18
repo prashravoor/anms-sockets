@@ -1,30 +1,18 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <netdb.h>
+#include <netinet/in.h>
+#include "common.h"
 
-#define DEFAULT_SERVER_PORT 8080
-#define SOCKET_DOMAIN AF_INET
-#define SOCKET_TYPE SOCK_STREAM
 #define MAX 1000
 #define MAX_RETRIES 3
 #define SLEEP_INTERVAL_MICROS 100000 // 100ms
 
 extern int errno;
-
-void error(char *msg, int socket)
-{
-    perror(msg);
-    if(socket > 0) {
-        close(socket);
-    }
-    exit(1);
-}
 
 int main(int argc, char **argv)
 {
@@ -52,6 +40,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+	if(getIpDetails(serverIp, port, &server_address)) {
+		printf("Failed to find the IP address to connect to");
+		return 1;
+	}
+
     client_socket = socket(SOCKET_DOMAIN, SOCKET_TYPE, 0);
     if (client_socket < 0)
     {
@@ -59,14 +52,10 @@ int main(int argc, char **argv)
     }
     printf("Succesfully created socket: %d\n", client_socket);
 
-    memset(&server_address, 0, sizeof(server_address));
-    server_address.sin_family = SOCKET_DOMAIN;
-    server_address.sin_addr.s_addr = INADDR_ANY;
-    server_address.sin_port = htons(port);
-
     printf("Attempting to connect to server on port %d\n", port);
     while (retryCount++ < MAX_RETRIES && connectCode < 0) {
         connectCode = connect(client_socket, (const struct sockaddr *)&server_address, sizeof(server_address));
+        printf("ConnectCode: %d\n", connectCode);
         if(0 == connectCode || errno != ETIMEDOUT) {
             break;
         }
@@ -82,7 +71,7 @@ int main(int argc, char **argv)
     memset(buffer, 0, sizeof(buffer));
     strncpy(buffer, argv[1], strnlen(argv[1], MAX));
 
-    if (send(client_socket, buffer, strnlen(argv[1], MAX), 0) < 0)
+    if (send(client_socket, buffer, strnlen(argv[1], MAX), MSG_NOSIGNAL) < 0)
     {
         error("Failed to write the data to the server", client_socket);
     }
@@ -97,6 +86,7 @@ int main(int argc, char **argv)
 
     printf("\n");
     if(numBytesRead < 0) {
+        printf("Failed while reading info, %d\n", errno);
         error("Failed to read contents of the file", client_socket);
     }
 
