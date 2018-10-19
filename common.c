@@ -19,6 +19,11 @@ void error(char *msg, int socket)
     exit(1);
 }
 
+/**
+ * Get the socket address for the specified IP and port.
+ * If IP is NULL, it implies all local addresses.
+ * The ipAddress can be either a hostname or a static IP.
+ */
 int getIpDetails(char *ip, int port, struct sockaddr_in* sockaddr)
 {
 	int retCode;
@@ -52,3 +57,19 @@ int getIpDetails(char *ip, int port, struct sockaddr_in* sockaddr)
 	return 0;
 }
 
+unsigned long diffTime(struct timeval* endTime, struct timeval* startTime)
+{
+	unsigned long timeMicros = 0;
+	if(NULL == startTime || NULL == endTime)
+	{
+		return 0;
+	}
+
+	// Find difference in seconds first
+	timeMicros = (endTime->tv_sec - startTime->tv_sec) * 1000000;
+
+	// Add the micros difference
+	timeMicros += (endTime->tv_usec - startTime->tv_usec);
+
+	return timeMicros;
+}

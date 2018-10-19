@@ -5,73 +5,139 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <netinet/in.h>
 #include "common.h"
+#include <sys/time.h>
+#include <signal.h>
 
 #define MAX 1000
 #define MAX_RETRIES 3
 #define SLEEP_INTERVAL_MICROS 100000 // 100ms
+#define ENV_NUM_OF_CLIENTS "NUM_OF_CLIENTS"
 
 extern int errno;
 
+int readRemoteFile(char *fileName, char *serverIp, int port);
+void stopClient(int signum);
+
+static int client_socket;
+
 int main(int argc, char **argv)
 {
-    int client_socket, port = DEFAULT_SERVER_PORT;
-    struct sockaddr_in server_address;
-    int numBytesRead, retryCount = 0, connectCode = -1;
-    char buffer[MAX], *serverIp = NULL;
+    char *serverIp = NULL;
+    int port = DEFAULT_SERVER_PORT, numOfClients = 0, maxNumOfClients = 1;
+    struct timeval startTime, endTime;
+    struct sigaction handler;
 
-    if(argc != 2 && argc != 4) {
+    if (argc != 2 && argc != 4)
+    {
         printf("Invalid arguments\n\nUsage: %s <filename> <Optional Server IP> <Optional Server port>\n", argv[0]);
         return 1;
     }
 
-    if(4 == argc) {
+    if (4 == argc)
+    {
         serverIp = argv[2];
         port = atoi(argv[3]);
-        if(port < 1024) {
+        if (port < 1024)
+        {
             printf("Port number is not valid, specify a port value >= 1024\n");
             return 1;
         }
     }
 
-    if(strnlen(argv[1], MAX) >= MAX) {
+    if (strnlen(argv[1], MAX) >= MAX)
+    {
         printf("The filename provided is too long\n");
         return 1;
     }
 
-	if(getIpDetails(serverIp, port, &server_address)) {
-		printf("Failed to find the IP address to connect to");
-		return 1;
-	}
+    /**
+     * Read the max number of clients this process will fork
+     */
+    if (getenv(ENV_NUM_OF_CLIENTS))
+    {
+        maxNumOfClients = atoi(getenv(ENV_NUM_OF_CLIENTS));
+        if (maxNumOfClients <= 0)
+        {
+            maxNumOfClients = 1;
+        }
+    }
+
+    /*
+    * Signal Handling. If the client is terminated through Ctrl+C or through SIGTERM,
+    * then the handles of the client need to be closed. Add a singal handler for both signals.
+    * This process can fork several children, none of which get removed from the kernel automatically, since 
+    * all child processes are tied to the execution of the parent.
+    * Set SIGCHLD signal handler to Ignore, to auto cleanup all completed child processes.
+    */
+    memset(&handler, 0, sizeof(handler));
+    handler.sa_handler = stopClient;
+    sigaction(SIGTERM, &handler, NULL);
+    sigaction(SIGINT, &handler, NULL);
+    signal(SIGCHLD, SIG_IGN);
+
+    do
+    {
+        if (fork() == 0)
+        {
+            gettimeofday(&startTime, NULL);
+            readRemoteFile(argv[1], serverIp, port);
+            gettimeofday(&endTime, NULL);
+
+            printf("Total time to read the file from the server: %lumicros\n", diffTime(&endTime, &startTime));
+            return 0;
+        }
+    } while (++numOfClients < maxNumOfClients);
+
+    return 0;
+}
+
+/**
+ * Connects to the remote server, sends the file name to read, and receives
+ * the contents of the file, or errors if any, and echo's it back to the user.
+ */
+int readRemoteFile(char *fileName, char *serverIp, int port)
+{
+    int numBytesRead, retryCount = 0, connectCode = -1;
+    char buffer[MAX];
+    struct sockaddr_in server_address;
+
+    memset(&server_address, 0, sizeof(server_address));
+    if (getIpDetails(serverIp, port, &server_address))
+    {
+        printf("Failed to find the IP address to connect to");
+        return 1;
+    }
 
     client_socket = socket(SOCKET_DOMAIN, SOCKET_TYPE, 0);
     if (client_socket < 0)
     {
-        error("Failed to create the socket for the client", client_socket);
+        error("Failed to create the client socket", -1);
     }
-    printf("Succesfully created socket: %d\n", client_socket);
+    printf("Succesfully created client socket %d\n", client_socket);
 
     printf("Attempting to connect to server on port %d\n", port);
-    while (retryCount++ < MAX_RETRIES && connectCode < 0) {
+    while (retryCount++ < MAX_RETRIES && connectCode < 0)
+    {
         connectCode = connect(client_socket, (const struct sockaddr *)&server_address, sizeof(server_address));
-        printf("ConnectCode: %d\n", connectCode);
-        if(0 == connectCode || errno != ETIMEDOUT) {
+        if (0 == connectCode || errno != ETIMEDOUT)
+        {
             break;
         }
         perror("Failed to connect to the server");
-        printf("Retrying after %d ms\n", (SLEEP_INTERVAL_MICROS/1000));
+        printf("Retrying after %d ms\n", (SLEEP_INTERVAL_MICROS / 1000));
         usleep(SLEEP_INTERVAL_MICROS);
     }
-    if(connectCode < 0) {
+    if (connectCode != 0)
+    {
         error("Failed to connect to the server", client_socket);
     }
 
     printf("Successfully connected to server, Sending the File name\n");
     memset(buffer, 0, sizeof(buffer));
-    strncpy(buffer, argv[1], strnlen(argv[1], MAX));
+    strncpy(buffer, fileName, strnlen(fileName, MAX));
 
-    if (send(client_socket, buffer, strnlen(argv[1], MAX), MSG_NOSIGNAL) < 0)
+    if (send(client_socket, buffer, strnlen(fileName, MAX), MSG_NOSIGNAL) < 0)
     {
         error("Failed to write the data to the server", client_socket);
     }
@@ -85,11 +151,18 @@ int main(int argc, char **argv)
     }
 
     printf("\n");
-    if(numBytesRead < 0) {
-        printf("Failed while reading info, %d\n", errno);
+    if (numBytesRead < 0)
+    {
         error("Failed to read contents of the file", client_socket);
     }
 
     close(client_socket);
     return 0;
+}
+
+void stopClient(int signum)
+{
+    printf("Handled Signal %d\n", signum);
+    close(client_socket);
+    exit(0);
 }
