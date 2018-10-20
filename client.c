@@ -8,8 +8,9 @@
 #include "common.h"
 #include <sys/time.h>
 #include <signal.h>
+#include <sys/wait.h>
 
-#define MAX 1000
+#define MAX 4096
 #define MAX_RETRIES 3
 #define SLEEP_INTERVAL_MICROS 100000 // 100ms
 #define ENV_NUM_OF_CLIENTS "NUM_OF_CLIENTS"
@@ -18,6 +19,7 @@ extern int errno;
 
 int readRemoteFile(char *fileName, char *serverIp, int port);
 void stopClient(int signum);
+void childStopped(int);
 
 static int client_socket;
 
@@ -25,8 +27,10 @@ int main(int argc, char **argv)
 {
     char *serverIp = NULL;
     int port = DEFAULT_SERVER_PORT, numOfClients = 0, maxNumOfClients = 1;
+    int numPassed = 0, numFailed = 0, status, i = 0;
     struct timeval startTime, endTime;
     struct sigaction handler;
+    int *child_pids = NULL, childIndex = 0;
 
     if (argc != 2 && argc != 4)
     {
@@ -62,6 +66,7 @@ int main(int argc, char **argv)
             maxNumOfClients = 1;
         }
     }
+    child_pids = calloc(maxNumOfClients, sizeof(int));
 
     /*
     * Signal Handling. If the client is terminated through Ctrl+C or through SIGTERM,
@@ -74,21 +79,38 @@ int main(int argc, char **argv)
     handler.sa_handler = stopClient;
     sigaction(SIGTERM, &handler, NULL);
     sigaction(SIGINT, &handler, NULL);
-    signal(SIGCHLD, SIG_IGN);
+    handler.sa_handler = childStopped;
+    sigaction(SIGCHLD, &handler, NULL);
 
     do
     {
-        if (fork() == 0)
+        if ((child_pids[childIndex++] = fork()) == 0)
         {
+            free(child_pids);
             gettimeofday(&startTime, NULL);
             readRemoteFile(argv[1], serverIp, port);
             gettimeofday(&endTime, NULL);
 
-            printf("Total time to read the file from the server: %lumicros\n", diffTime(&endTime, &startTime));
+            printf("Total time to read the file from the server: %lu micros\n", diffTime(&endTime, &startTime));
             return 0;
         }
     } while (++numOfClients < maxNumOfClients);
 
+    for (i = 0; i < maxNumOfClients; ++i)
+    {
+        wait(&status);
+        if (status)
+        {
+            ++numFailed;
+        }
+        else
+        {
+            ++numPassed;
+        }
+    }
+
+    printf("Out of %d clients, %d passed, and %d have failed\n", maxNumOfClients, numPassed, numFailed);
+    free(child_pids);
     return 0;
 }
 
@@ -114,9 +136,9 @@ int readRemoteFile(char *fileName, char *serverIp, int port)
     {
         error("Failed to create the client socket", -1);
     }
-    printf("Succesfully created client socket %d\n", client_socket);
+    //printf("Succesfully created client socket %d\n", client_socket);
 
-    printf("Attempting to connect to server on port %d\n", port);
+    //printf("Attempting to connect to server on port %d\n", port);
     while (retryCount++ < MAX_RETRIES && connectCode < 0)
     {
         connectCode = connect(client_socket, (const struct sockaddr *)&server_address, sizeof(server_address));
@@ -133,7 +155,7 @@ int readRemoteFile(char *fileName, char *serverIp, int port)
         error("Failed to connect to the server", client_socket);
     }
 
-    printf("Successfully connected to server, Sending the File name\n");
+    //printf("Successfully connected to server, Sending the File name\n");
     memset(buffer, 0, sizeof(buffer));
     strncpy(buffer, fileName, strnlen(fileName, MAX));
 
@@ -143,7 +165,7 @@ int readRemoteFile(char *fileName, char *serverIp, int port)
     }
 
     memset(buffer, 0, sizeof(buffer));
-    printf("Attempting to read contents of file\n");
+    //printf("Attempting to read contents of file\n");
     while ((numBytesRead = recv(client_socket, buffer, MAX, 0)) > 0)
     {
         printf("%s", buffer);
@@ -151,7 +173,7 @@ int readRemoteFile(char *fileName, char *serverIp, int port)
     }
 
     printf("\n");
-    if (numBytesRead < 0)
+    if (numBytesRead < 0 && errno != 0)
     {
         error("Failed to read contents of the file", client_socket);
     }
@@ -165,4 +187,10 @@ void stopClient(int signum)
     printf("Handled Signal %d\n", signum);
     close(client_socket);
     exit(0);
+}
+
+void childStopped(int signum)
+{
+    int pid, status;
+    wait(&status);
 }

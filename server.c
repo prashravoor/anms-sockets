@@ -9,11 +9,13 @@
 #include "common.h"
 #include <signal.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
-#define DEFAULT_QUEUE_SIZE 5
+#define DEFAULT_QUEUE_SIZE 128
 #define DEFAULT_FORK_POOL_SIZE 100
 #define ENV_NO_FORK_CHILDREN "NO_FORK_CHILDREN"
-#define MAX 1000
+#define MAX 4096
+#define SLEEP_INTERVAL_MICROS 100000 // 100ms
 
 extern int errno;
 
@@ -51,9 +53,9 @@ int main(int argc, char **argv)
         }
 
         maxQueueSize = atoi(argv[2]);
-        if (maxQueueSize < 0 || maxQueueSize > 5)
+        if (maxQueueSize < 0 || maxQueueSize > DEFAULT_QUEUE_SIZE)
         {
-            printf("Invalid value for max queue size, enter a value between 0 and 5\n");
+            printf("Invalid value for max queue size, enter a value between 0 and %d\n", DEFAULT_QUEUE_SIZE);
             return 1;
         }
     }
@@ -111,13 +113,19 @@ int main(int argc, char **argv)
         else if (!fork_children || child_pid < 0)
         {
             // Either iterative mode server or forking a child failed.
+            printf("The parent process will service the request");
+            if(errno != 0) 
+            {
+                printf(": %s", strerror(errno));
+            }
+            printf("\n");
             serveFile(client_socket);
         }
 
         ++numClientsServiced;
         close(client_socket);
         gettimeofday(&endTime, NULL);
-        printf("Total time to service client: %lumicros\n", diffTime(&endTime, &startTime));
+        printf("Total time to service client: %lu micros\n", diffTime(&endTime, &startTime));
     }
 
     close(server_socket);
@@ -172,7 +180,9 @@ void stopServer(int signum)
 void serveFile(int client_socket)
 {
     char buffer[MAX], *error = NULL;
-    int numBytesRead = 0, fd = 0;
+    int numBytesRead = 0, fd = 0, n = 0;
+
+
     //printf("Attempting to read file name from socket %d\n", client_socket);
     memset(buffer, 0, sizeof(buffer));
 
@@ -183,7 +193,7 @@ void serveFile(int client_socket)
         return;
     }
 
-    //printf("Attempting to read file %s\n", buffer);
+    printf("Attempting to read file %s\n", buffer);
     fd = openFileForRead(buffer);
     memset(buffer, 0, sizeof(buffer));
     if (fd < 0)
@@ -209,15 +219,34 @@ void serveFile(int client_socket)
     }
 
     close(fd);
-    return;
 }
 
 int openFileForRead(char *filename)
 {
+    int fd = -1;
+    struct stat stats;
     if (NULL == filename)
     {
         return -1;
     }
 
-    return open(filename, O_RDONLY);
+    fd = open(filename, O_RDONLY);
+    if( fd < 0) {
+        return fd;
+    }
+
+    if(fstat(fd, &stats)) {
+        perror("Failed to verify the type of file");
+        close(fd);
+        return -1;
+    }
+    if((stats.st_mode & S_IFMT) != S_IFREG)
+    {
+        printf("The file specified is not a regular file\n");
+        errno = EINVAL;
+        close(fd);
+        fd = -1;
+    }
+
+    return fd;
 }
