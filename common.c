@@ -39,6 +39,7 @@ int getIpDetails(char *ip, int port, struct sockaddr_in* sockaddr)
     sockaddr->sin_family = SOCKET_DOMAIN;
 	if(NULL == ip) {
 	    sockaddr->sin_addr.s_addr = INADDR_ANY;
+    	// htons converts the host specific byte ordering for the port number to a network specific ordering
 		sockaddr->sin_port = htons(port);
 		return 0;
 	}

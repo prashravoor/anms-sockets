@@ -5,10 +5,11 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include "common.h"
 #include <sys/time.h>
 #include <signal.h>
 #include <sys/wait.h>
+
+#include "common.h"
 
 #define MAX 4096
 #define MAX_RETRIES 3
@@ -34,7 +35,7 @@ int main(int argc, char **argv)
 
     if (argc != 2 && argc != 4)
     {
-        printf("Invalid arguments\n\nUsage: %s <filename> <Optional Server IP> <Optional Server port>\n", argv[0]);
+        printf("Invalid arguments\n\nUsage: %s <filename> [<Optional Server IP> <Optional Server port>]\n", argv[0]);
         return 1;
     }
 

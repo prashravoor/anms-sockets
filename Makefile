@@ -1,3 +1,5 @@
+CC=gcc
+
 all: server client
 
 client:	common.o common.h client.o
